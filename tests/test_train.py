@@ -140,6 +140,13 @@ class TrainOrchestratorTests(unittest.TestCase):
         self.assertEqual(model_config.attention_resolutions, (16, 8))
         self.assertEqual(model_config.attention_heads, 2)
 
+    def test_conditioning_arg_is_saved_in_model_config(self) -> None:
+        args = train.parse_args(["--conditioning", "film"])
+
+        model_config, _ = train._training_configs(args, None)
+
+        self.assertEqual(model_config.conditioning, "film")
+
 
 def _smoke_args(
     train_csv: Path,

@@ -93,20 +93,24 @@ class GenerateTests(unittest.TestCase):
             checkpoint = _write_checkpoint(root / "model.pth")
             generate_csv = _write_generate_csv(root / "generate.csv", count=5)
             sample_shapes: list[tuple[int, int, int, int]] = []
+            sample_configs: list[tuple[str, float]] = []
 
             def fake_sample(self, model, conditions, shape, **kwargs):
                 sample_shapes.append(shape)
+                sample_configs.append((self.config.sampler, self.config.ddim_eta))
                 return torch.zeros(shape)
 
             args = _generate_args(checkpoint, generate_csv, root / "out", root / "run")
             args[args.index("--batch_size") + 1] = "2"
             args[args.index("--limit") + 1] = "5"
+            args += ["--sampler", "ddim", "--ddim_eta", "0.25"]
             with mock.patch.object(generate.GaussianDiffusion, "sample", fake_sample):
                 with redirect_stdout(StringIO()):
                     exit_code = generate.main(args)
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(sample_shapes, [(2, 3, 64, 64), (2, 3, 64, 64), (1, 3, 64, 64)])
+        self.assertEqual(sample_configs, [("ddim", 0.25), ("ddim", 0.25), ("ddim", 0.25)])
 
     def test_checkpoint_category_mismatch_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

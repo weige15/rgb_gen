@@ -58,6 +58,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--attention_resolutions", default="")
     parser.add_argument("--attention_heads", type=int, default=4)
+    parser.add_argument("--conditioning", default="additive", choices=("additive", "film"))
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--cpu_smoke", action="store_true")
     return parser.parse_args(argv)
@@ -339,6 +340,7 @@ def _training_configs(
             dropout=args.dropout,
             attention_resolutions=_parse_optional_int_tuple(args.attention_resolutions, "attention_resolutions"),
             attention_heads=args.attention_heads,
+            conditioning=args.conditioning,
         ),
         DiffusionConfig(
             train_timesteps=args.train_timesteps,

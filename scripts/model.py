@@ -20,6 +20,7 @@ class UNetConfig:
     dropout: float = 0.0
     attention_resolutions: tuple[int, ...] = ()
     attention_heads: int = 4
+    conditioning: str = "additive"
     num_animals: int = len(ANIMALS)
     num_objects: int = len(OBJECTS)
     num_pairs: int = len(ANIMALS) * len(OBJECTS)
@@ -63,7 +64,15 @@ class ConditionalUNet(nn.Module):
             blocks = []
             for block_index in range(config.residual_blocks):
                 block_in = current_channels if block_index == 0 else out_channels
-                blocks.append(ResidualBlock(block_in, out_channels, config.embedding_dim, config.dropout))
+                blocks.append(
+                    ResidualBlock(
+                        block_in,
+                        out_channels,
+                        config.embedding_dim,
+                        config.dropout,
+                        conditioning=config.conditioning,
+                    )
+                )
                 if resolution in config.attention_resolutions:
                     blocks.append(AttentionBlock(out_channels, config.attention_heads))
             downsample = (
@@ -75,23 +84,51 @@ class ConditionalUNet(nn.Module):
             current_channels = out_channels
 
         middle_blocks: list[nn.Module] = [
-            ResidualBlock(current_channels, current_channels, config.embedding_dim, config.dropout)
+            ResidualBlock(
+                current_channels,
+                current_channels,
+                config.embedding_dim,
+                config.dropout,
+                conditioning=config.conditioning,
+            )
         ]
         if resolutions[-1] in config.attention_resolutions:
             middle_blocks.append(AttentionBlock(current_channels, config.attention_heads))
-        middle_blocks.append(ResidualBlock(current_channels, current_channels, config.embedding_dim, config.dropout))
+        middle_blocks.append(
+            ResidualBlock(
+                current_channels,
+                current_channels,
+                config.embedding_dim,
+                config.dropout,
+                conditioning=config.conditioning,
+            )
+        )
         self.middle = nn.ModuleList(middle_blocks)
 
         self.up_blocks = nn.ModuleList()
         for skip_channels, resolution in zip(reversed(channels[:-1]), reversed(resolutions[:-1]), strict=True):
             upsample = nn.ConvTranspose2d(current_channels, skip_channels, kernel_size=4, stride=2, padding=1)
             blocks = [
-                ResidualBlock(skip_channels * 2, skip_channels, config.embedding_dim, config.dropout)
+                ResidualBlock(
+                    skip_channels * 2,
+                    skip_channels,
+                    config.embedding_dim,
+                    config.dropout,
+                    conditioning=config.conditioning,
+                )
             ]
             if resolution in config.attention_resolutions:
                 blocks.append(AttentionBlock(skip_channels, config.attention_heads))
             for _ in range(config.residual_blocks - 1):
-                blocks.append(ResidualBlock(skip_channels, skip_channels, config.embedding_dim, config.dropout))
+                blocks.append(
+                    ResidualBlock(
+                        skip_channels,
+                        skip_channels,
+                        config.embedding_dim,
+                        config.dropout,
+                        conditioning=config.conditioning,
+                    )
+                )
                 if resolution in config.attention_resolutions:
                     blocks.append(AttentionBlock(skip_channels, config.attention_heads))
             self.up_blocks.append(nn.ModuleDict({"upsample": upsample, "blocks": nn.ModuleList(blocks)}))
@@ -179,11 +216,20 @@ class ConditionalUNet(nn.Module):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, embedding_dim: int, dropout: float):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        embedding_dim: int,
+        dropout: float,
+        conditioning: str = "additive",
+    ):
         super().__init__()
+        self.conditioning = conditioning
         self.norm1 = nn.GroupNorm(_group_count(in_channels), in_channels)
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.embedding_projection = nn.Linear(embedding_dim, out_channels)
+        projection_channels = out_channels * 2 if conditioning == "film" else out_channels
+        self.embedding_projection = nn.Linear(embedding_dim, projection_channels)
         self.norm2 = nn.GroupNorm(_group_count(out_channels), out_channels)
         self.dropout = nn.Dropout(dropout)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
@@ -195,8 +241,13 @@ class ResidualBlock(nn.Module):
 
     def forward(self, x: torch.Tensor, embedding: torch.Tensor) -> torch.Tensor:
         hidden = self.conv1(torch.nn.functional.silu(self.norm1(x)))
-        hidden = hidden + self.embedding_projection(embedding)[:, :, None, None]
-        hidden = self.conv2(self.dropout(torch.nn.functional.silu(self.norm2(hidden))))
+        projected = self.embedding_projection(embedding)
+        if self.conditioning == "film":
+            scale, shift = projected[:, :, None, None].chunk(2, dim=1)
+            hidden = self.norm2(hidden) * (1.0 + scale) + shift
+        else:
+            hidden = self.norm2(hidden + projected[:, :, None, None])
+        hidden = self.conv2(self.dropout(torch.nn.functional.silu(hidden)))
         return hidden + self.skip(x)
 
 
@@ -280,6 +331,8 @@ def _validate_config(config: UNetConfig) -> None:
         )
     if config.attention_heads <= 0:
         raise ValueError("attention_heads must be positive.")
+    if config.conditioning not in {"additive", "film"}:
+        raise ValueError("conditioning must be 'additive' or 'film'.")
     if config.num_animals <= 0 or config.num_objects <= 0 or config.num_pairs <= 0:
         raise ValueError("label counts must be positive.")
 

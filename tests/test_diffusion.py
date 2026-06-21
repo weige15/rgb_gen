@@ -97,6 +97,25 @@ class GaussianDiffusionTests(unittest.TestCase):
         self.assertEqual(tuple(samples.shape), (1, 3, 64, 64))
         self.assertTrue(torch.isfinite(samples).all().item())
 
+    def test_sampling_supports_ddim(self) -> None:
+        torch.manual_seed(15)
+        model = _tiny_model().eval()
+        diffusion = GaussianDiffusion(
+            DiffusionConfig(train_timesteps=4, sampling_steps=2, sampler="ddim", ddim_eta=0.0)
+        )
+
+        samples = diffusion.sample(
+            model,
+            _conditions(1),
+            (1, 3, 64, 64),
+            generator=torch.Generator().manual_seed(7),
+        )
+
+        self.assertEqual(tuple(samples.shape), (1, 3, 64, 64))
+        self.assertTrue(torch.isfinite(samples).all().item())
+        self.assertLessEqual(float(samples.max().item()), 1.0)
+        self.assertGreaterEqual(float(samples.min().item()), -1.0)
+
     def test_sampling_clips_predicted_clean_image(self) -> None:
         model = _ExtremeNoiseModel().eval()
         diffusion = GaussianDiffusion(DiffusionConfig(train_timesteps=4, sampling_steps=4))
@@ -146,11 +165,15 @@ class GaussianDiffusionTests(unittest.TestCase):
         diffusion = GaussianDiffusion(DiffusionConfig(train_timesteps=4, sampling_steps=2))
 
         with self.assertRaises(ValueError):
-            diffusion.sample(model, _conditions(1), (1, 3, 64, 64), sampler="ddim")
+            diffusion.sample(model, _conditions(1), (1, 3, 64, 64), sampler="bad")
 
     def test_invalid_sampling_steps_are_rejected(self) -> None:
         with self.assertRaises(ValueError):
             GaussianDiffusion(DiffusionConfig(train_timesteps=4, sampling_steps=5))
+
+    def test_negative_ddim_eta_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            GaussianDiffusion(DiffusionConfig(ddim_eta=-0.1))
 
 
 def _tiny_model() -> ConditionalUNet:

@@ -18,6 +18,7 @@ class DiffusionConfig:
     prediction_target: str = "epsilon"
     sampler: str = "ddpm"
     sampling_steps: int = 1000
+    ddim_eta: float = 0.0
     cfg_dropout: float = 0.0
     guidance_scale: float = 1.0
 
@@ -95,8 +96,8 @@ class GaussianDiffusion:
         device: torch.device | str | None = None,
     ) -> torch.Tensor:
         sampler_name = sampler or self.config.sampler
-        if sampler_name != "ddpm":
-            raise ValueError(f"Unsupported sampler {sampler_name!r}; only 'ddpm' is implemented.")
+        if sampler_name not in {"ddpm", "ddim"}:
+            raise ValueError(f"Unsupported sampler {sampler_name!r}; expected 'ddpm' or 'ddim'.")
         sampling_steps = steps or self.config.sampling_steps
         _validate_sampling_steps(sampling_steps, self.config.train_timesteps)
         scale = self.config.guidance_scale if guidance_scale is None else guidance_scale
@@ -114,15 +115,40 @@ class GaussianDiffusion:
             device=sample_device,
         )
 
-        for timestep in timesteps:
+        for index, timestep in enumerate(timesteps):
             timestep_batch = torch.full((shape[0],), int(timestep.item()), dtype=torch.long, device=sample_device)
             predicted_noise = self._predict_noise(model, x_t, timestep_batch, model_conditions, scale)
-            betas_t = _extract(self.schedule.betas, timestep_batch, x_t.shape)
-            alphas_t = _extract(self.schedule.alphas, timestep_batch, x_t.shape)
             alpha_bars_t = _extract(self.schedule.alpha_bars, timestep_batch, x_t.shape)
-            alpha_bars_previous_t = _extract(self.schedule.alpha_bars_previous, timestep_batch, x_t.shape)
             sqrt_one_minus = _extract(self.schedule.sqrt_one_minus_alpha_bars, timestep_batch, x_t.shape)
             predicted_x_0 = ((x_t - sqrt_one_minus * predicted_noise) / torch.sqrt(alpha_bars_t)).clamp(-1.0, 1.0)
+
+            if sampler_name == "ddim":
+                if index == len(timesteps) - 1:
+                    x_t = predicted_x_0
+                    continue
+                previous_timestep = torch.full(
+                    (shape[0],),
+                    int(timesteps[index + 1].item()),
+                    dtype=torch.long,
+                    device=sample_device,
+                )
+                alpha_bars_previous_t = _extract(self.schedule.alpha_bars, previous_timestep, x_t.shape)
+                sigma = self.config.ddim_eta * torch.sqrt(
+                    torch.clamp(
+                        (1.0 - alpha_bars_previous_t)
+                        / (1.0 - alpha_bars_t)
+                        * (1.0 - alpha_bars_t / alpha_bars_previous_t),
+                        min=0.0,
+                    )
+                )
+                direction = torch.sqrt(torch.clamp(1.0 - alpha_bars_previous_t - sigma.square(), min=0.0))
+                noise = torch.randn(shape, device=sample_device, generator=generator) if self.config.ddim_eta > 0 else 0.0
+                x_t = torch.sqrt(alpha_bars_previous_t) * predicted_x_0 + direction * predicted_noise + sigma * noise
+                continue
+
+            betas_t = _extract(self.schedule.betas, timestep_batch, x_t.shape)
+            alphas_t = _extract(self.schedule.alphas, timestep_batch, x_t.shape)
+            alpha_bars_previous_t = _extract(self.schedule.alpha_bars_previous, timestep_batch, x_t.shape)
             model_mean = (
                 betas_t * torch.sqrt(alpha_bars_previous_t) / (1.0 - alpha_bars_t) * predicted_x_0
                 + torch.sqrt(alphas_t) * (1.0 - alpha_bars_previous_t) / (1.0 - alpha_bars_t) * x_t
@@ -273,9 +299,11 @@ def _validate_config(config: DiffusionConfig) -> None:
         raise ValueError("beta_start must be smaller than beta_end.")
     if config.prediction_target != "epsilon":
         raise ValueError("Only epsilon prediction is supported.")
-    if config.sampler != "ddpm":
-        raise ValueError("Only ddpm sampling is supported.")
+    if config.sampler not in {"ddpm", "ddim"}:
+        raise ValueError("sampler must be 'ddpm' or 'ddim'.")
     _validate_sampling_steps(config.sampling_steps, config.train_timesteps)
+    if config.ddim_eta < 0:
+        raise ValueError("ddim_eta must be non-negative.")
     if not 0.0 <= config.cfg_dropout <= 1.0:
         raise ValueError("cfg_dropout must be in [0, 1].")
     if config.guidance_scale < 0:

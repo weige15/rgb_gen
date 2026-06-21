@@ -32,6 +32,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--devices")
     parser.add_argument("--sampler", default="ddpm")
     parser.add_argument("--sampling_steps", type=int)
+    parser.add_argument("--ddim_eta", type=float)
     parser.add_argument("--guidance_scale", type=float, default=1.0)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--use_ema", action="store_true")
@@ -195,6 +196,8 @@ def _build_from_checkpoint(
     diffusion_config = DiffusionConfig(**dict(checkpoint["diffusion_config"]))
     if args.sampling_steps is not None:
         diffusion_config = replace(diffusion_config, sampling_steps=args.sampling_steps)
+    if args.ddim_eta is not None:
+        diffusion_config = replace(diffusion_config, ddim_eta=args.ddim_eta)
     diffusion_config = replace(diffusion_config, sampler=args.sampler, guidance_scale=args.guidance_scale)
     return model, GaussianDiffusion(diffusion_config)
 
@@ -205,6 +208,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("batch_size must be positive.")
     if args.limit is not None and args.limit <= 0:
         raise ValueError("limit must be positive when provided.")
+    if args.ddim_eta is not None and args.ddim_eta < 0:
+        raise ValueError("ddim_eta must be non-negative.")
     if args.guidance_scale < 0:
         raise ValueError("guidance_scale must be non-negative.")
 
