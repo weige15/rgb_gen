@@ -87,6 +87,27 @@ class GenerateTests(unittest.TestCase):
         self.assertEqual(sorted(image_ids), [f"{index:06d}.png" for index in range(1, 6)])
         self.assertEqual(len(image_ids), len(set(image_ids)))
 
+    def test_batch_size_controls_sampling_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint = _write_checkpoint(root / "model.pth")
+            generate_csv = _write_generate_csv(root / "generate.csv", count=5)
+            sample_shapes: list[tuple[int, int, int, int]] = []
+
+            def fake_sample(self, model, conditions, shape, **kwargs):
+                sample_shapes.append(shape)
+                return torch.zeros(shape)
+
+            args = _generate_args(checkpoint, generate_csv, root / "out", root / "run")
+            args[args.index("--batch_size") + 1] = "2"
+            args[args.index("--limit") + 1] = "5"
+            with mock.patch.object(generate.GaussianDiffusion, "sample", fake_sample):
+                with redirect_stdout(StringIO()):
+                    exit_code = generate.main(args)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(sample_shapes, [(2, 3, 64, 64), (2, 3, 64, 64), (1, 3, 64, 64)])
+
     def test_checkpoint_category_mismatch_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

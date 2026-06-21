@@ -5,6 +5,9 @@ __pycache__/
 generated_images/
 generated_images_10k/
 generated_images_10k_noema_test/
+generated_images_10k_gs2_test/
+generated_images_10k_gs3_test/
+generated_images_10k_samplerfix_noema_test/
 checkpoints/
 runs/
 scores.json

@@ -78,18 +78,19 @@ def generate(args: argparse.Namespace) -> dict[str, Any]:
 
         started = time.monotonic()
         generated = 0
-        for request in rank_requests:
-            image = _sample_request(model, diffusion, request, args.seed, args, device)
-            image_path = output_dir / request.image_id
-            if image_path.exists() and not args.overwrite:
-                raise FileExistsError(f"{image_path} exists; pass --overwrite to replace it.")
-            image.save(image_path, format="PNG")
-            generated += 1
-            if distributed["rank"] == 0:
-                event = _log_event(args, distributed, generated, len(rank_requests), output_dir, started)
-                _append_log(run_dir / "generate.jsonl", event)
-                if not args.quiet:
-                    print(f"generated={generated}/{len(rank_requests)} file={request.image_id}")
+        for batch in _batches(rank_requests, args.batch_size):
+            images = _sample_requests(model, diffusion, batch, args.seed, args, device)
+            for request, image in zip(batch, images, strict=True):
+                image_path = output_dir / request.image_id
+                if image_path.exists() and not args.overwrite:
+                    raise FileExistsError(f"{image_path} exists; pass --overwrite to replace it.")
+                image.save(image_path, format="PNG")
+                generated += 1
+                if distributed["rank"] == 0:
+                    event = _log_event(args, distributed, generated, len(rank_requests), output_dir, started)
+                    _append_log(run_dir / "generate.jsonl", event)
+                    if not args.quiet:
+                        print(f"generated={generated}/{len(rank_requests)} file={request.image_id}")
 
         if distributed["world_size"] > 1:
             torch.distributed.barrier()
@@ -115,31 +116,40 @@ def partition_requests(
     return list(requests[rank::world_size])
 
 
-def _sample_request(
+def _batches(requests: Sequence[GenerationRequest], batch_size: int) -> list[list[GenerationRequest]]:
+    return [list(requests[index : index + batch_size]) for index in range(0, len(requests), batch_size)]
+
+
+def _sample_requests(
     model: ConditionalUNet,
     diffusion: GaussianDiffusion,
-    request: GenerationRequest,
+    requests: Sequence[GenerationRequest],
     base_seed: int,
     args: argparse.Namespace,
     device: torch.device,
-) -> Image.Image:
+) -> list[Image.Image]:
+    if not requests:
+        return []
+    condition_values = [condition_to_ids(request.condition) for request in requests]
     condition_ids = {
-        key: torch.tensor([value], dtype=torch.long, device=device)
-        for key, value in condition_to_ids(request.condition).items()
+        key: torch.tensor([row[key] for row in condition_values], dtype=torch.long, device=device)
+        for key in ("animal_id", "object_id", "pair_id")
     }
-    generator = torch.Generator(device=device.type).manual_seed(base_seed + request.row_index)
+    generator = torch.Generator(device=device.type).manual_seed(base_seed + requests[0].row_index)
     sample = diffusion.sample(
         model,
         condition_ids,
-        (1, 3, 64, 64),
+        (len(requests), 3, 64, 64),
         sampler=args.sampler,
         steps=args.sampling_steps,
         guidance_scale=args.guidance_scale,
         generator=generator,
         device=device,
     )
-    uint8 = tensor_to_uint8_images(sample.cpu())[0]
-    return Image.frombytes("RGB", (uint8.shape[1], uint8.shape[0]), uint8.numpy().tobytes())
+    return [
+        Image.frombytes("RGB", (uint8.shape[1], uint8.shape[0]), uint8.numpy().tobytes())
+        for uint8 in tensor_to_uint8_images(sample.cpu())
+    ]
 
 
 def _load_checkpoint(path: Path, device: torch.device) -> dict[str, Any]:
