@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import random
+import sys
 import time
 from contextlib import nullcontext
 from dataclasses import asdict
@@ -15,6 +16,9 @@ import torch
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.brainrot_data import ANIMALS, OBJECTS, BrainrotDataset, load_extra_records, load_train_records
 from scripts.diffusion import DiffusionConfig, GaussianDiffusion

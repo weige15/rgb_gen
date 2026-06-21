@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -11,6 +12,9 @@ from typing import Any, Sequence
 
 import torch
 from PIL import Image
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.brainrot_data import ANIMALS, OBJECTS, GenerationRequest, condition_to_ids, load_generation_requests
 from scripts.diffusion import DiffusionConfig, GaussianDiffusion, tensor_to_uint8_images

@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
 from pathlib import Path
 from typing import Iterable
 
 from PIL import Image, UnidentifiedImageError
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.brainrot_data import CSVValidationError, IMAGE_SIZE, load_generation_requests
 
