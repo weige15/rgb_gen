@@ -10,6 +10,7 @@ generated_images_10k_gs3_test/
 generated_images_10k_samplerfix_noema_test/
 generated_images_100k_35000/
 generated_images_100k_35000_raw_gs3_test/
+generated_images_100k_35000_raw_gs4_test/
 checkpoints/
 runs/
 scores.json
