@@ -42,6 +42,7 @@
 - 2026-06-21 18:54:44 CST: Completed Documentation and Dependency Manifest. Scope: `README.md`, `requirements.txt`, `AGENTS.md`, and `doc/tasks/documentation-and-dependency-manifest.md`. Evidence: `python -m unittest discover` passed with 79 tests; `python -m compileall scoring_program scripts` passed. Dependency installation was not run to avoid mutating the active Python environment during this implementation pass.
 - 2026-06-21 18:53:11 CST: Full available checks after Submission Packager passed. Evidence: `python -m unittest discover` passed with 79 tests; `python -m compileall scripts` passed.
 - 2026-06-21 18:58:36 CST: Final available checks passed after documentation review. Evidence: `python -m unittest discover` passed with 79 tests; `python -m compileall scoring_program scripts` passed; targeted prohibited-dependency/scorer-coupling scan found only documentation caveats, checkpoint metadata keys, and tests.
+- 2026-06-21 19:08:13 CST: Fixed DDP training with classifier-free dropout by unwrapping `DistributedDataParallel.module` when accessing `null_condition_ids`; also destroy process groups on training CLI errors. Evidence: `python -m unittest tests.test_diffusion tests.test_train` passed with 18 tests; `python -m unittest discover` passed with 81 tests; `python -m compileall scoring_program scripts` passed.
 
 ## Full-Project Gates
 

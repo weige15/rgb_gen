@@ -140,10 +140,11 @@ class GaussianDiffusion:
         model_conditions = _conditions_to_device(conditions, device)
         if self.config.cfg_dropout <= 0:
             return model_conditions
-        if not hasattr(model, "null_condition_ids"):
+        condition_model = _condition_model(model)
+        if not hasattr(condition_model, "null_condition_ids"):
             raise ValueError("cfg_dropout requires a model with null_condition_ids().")
 
-        null_conditions = model.null_condition_ids(batch_size, device)
+        null_conditions = condition_model.null_condition_ids(batch_size, device)
         drop_mask = torch.rand((batch_size,), device=device, generator=generator) < self.config.cfg_dropout
         return {
             key: torch.where(drop_mask, null_conditions[key], value)
@@ -166,10 +167,11 @@ class GaussianDiffusion:
                 conditions["object_id"],
                 conditions["pair_id"],
             )
-        if not hasattr(model, "null_condition_ids"):
+        condition_model = _condition_model(model)
+        if not hasattr(condition_model, "null_condition_ids"):
             raise ValueError("Classifier-free guidance requires a model with null_condition_ids().")
 
-        null_conditions = model.null_condition_ids(x_t.shape[0], x_t.device)
+        null_conditions = condition_model.null_condition_ids(x_t.shape[0], x_t.device)
         uncond = model(
             x_t,
             timesteps,
@@ -221,6 +223,10 @@ def tensor_to_uint8_images(samples: torch.Tensor) -> torch.Tensor:
         raise ValueError(f"samples must have 3 channels, got {samples.shape[1]}.")
     images = samples.detach().clamp(-1.0, 1.0).add(1.0).mul(127.5).round()
     return images.to(dtype=torch.uint8).permute(0, 2, 3, 1).contiguous()
+
+
+def _condition_model(model: torch.nn.Module) -> torch.nn.Module:
+    return getattr(model, "module", model)
 
 
 def _cosine_betas(train_timesteps: int, s: float = 0.008) -> torch.Tensor:

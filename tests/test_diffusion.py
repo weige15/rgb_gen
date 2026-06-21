@@ -47,6 +47,19 @@ class GaussianDiffusionTests(unittest.TestCase):
         self.assertEqual(tuple(loss.shape), ())
         self.assertTrue(torch.isfinite(loss).item())
 
+    def test_training_loss_cfg_dropout_supports_ddp_like_wrapper(self) -> None:
+        torch.manual_seed(13)
+        model = _DDPLikeWrapper(_tiny_model())
+        diffusion = GaussianDiffusion(
+            DiffusionConfig(train_timesteps=4, sampling_steps=4, cfg_dropout=1.0)
+        )
+        generator = torch.Generator().manual_seed(5)
+
+        loss = diffusion.training_loss(model, torch.randn(2, 3, 64, 64), _conditions(2), generator)
+
+        self.assertEqual(tuple(loss.shape), ())
+        self.assertTrue(torch.isfinite(loss).item())
+
     def test_sampling_is_repeatable_with_seeded_generator(self) -> None:
         torch.manual_seed(11)
         model = _tiny_model().eval()
@@ -71,6 +84,22 @@ class GaussianDiffusionTests(unittest.TestCase):
     def test_sampling_supports_cfg_mixing(self) -> None:
         torch.manual_seed(12)
         model = _tiny_model().eval()
+        diffusion = GaussianDiffusion(DiffusionConfig(train_timesteps=4, sampling_steps=2))
+
+        samples = diffusion.sample(
+            model,
+            _conditions(1),
+            (1, 3, 64, 64),
+            guidance_scale=1.5,
+            generator=torch.Generator().manual_seed(7),
+        )
+
+        self.assertEqual(tuple(samples.shape), (1, 3, 64, 64))
+        self.assertTrue(torch.isfinite(samples).all().item())
+
+    def test_sampling_cfg_mixing_supports_ddp_like_wrapper(self) -> None:
+        torch.manual_seed(14)
+        model = _DDPLikeWrapper(_tiny_model().eval())
         diffusion = GaussianDiffusion(DiffusionConfig(train_timesteps=4, sampling_steps=2))
 
         samples = diffusion.sample(
@@ -127,6 +156,15 @@ def _conditions(batch_size: int) -> dict[str, torch.Tensor]:
         "object_id": torch.zeros(batch_size, dtype=torch.long),
         "pair_id": torch.zeros(batch_size, dtype=torch.long),
     }
+
+
+class _DDPLikeWrapper(torch.nn.Module):
+    def __init__(self, module: torch.nn.Module):
+        super().__init__()
+        self.module = module
+
+    def forward(self, *args, **kwargs):
+        return self.module(*args, **kwargs)
 
 
 if __name__ == "__main__":

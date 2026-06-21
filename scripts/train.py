@@ -64,6 +64,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         train(parse_args(argv))
     except Exception as exc:  # pragma: no cover - exercised through CLI tests.
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
         print(f"ERROR: {exc}")
         return 1
     return 0
