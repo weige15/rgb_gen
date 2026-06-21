@@ -118,9 +118,15 @@ class GaussianDiffusion:
             timestep_batch = torch.full((shape[0],), int(timestep.item()), dtype=torch.long, device=sample_device)
             predicted_noise = self._predict_noise(model, x_t, timestep_batch, model_conditions, scale)
             betas_t = _extract(self.schedule.betas, timestep_batch, x_t.shape)
+            alphas_t = _extract(self.schedule.alphas, timestep_batch, x_t.shape)
+            alpha_bars_t = _extract(self.schedule.alpha_bars, timestep_batch, x_t.shape)
+            alpha_bars_previous_t = _extract(self.schedule.alpha_bars_previous, timestep_batch, x_t.shape)
             sqrt_one_minus = _extract(self.schedule.sqrt_one_minus_alpha_bars, timestep_batch, x_t.shape)
-            sqrt_recip_alpha = _extract(self.schedule.sqrt_recip_alphas, timestep_batch, x_t.shape)
-            model_mean = sqrt_recip_alpha * (x_t - betas_t * predicted_noise / sqrt_one_minus)
+            predicted_x_0 = ((x_t - sqrt_one_minus * predicted_noise) / torch.sqrt(alpha_bars_t)).clamp(-1.0, 1.0)
+            model_mean = (
+                betas_t * torch.sqrt(alpha_bars_previous_t) / (1.0 - alpha_bars_t) * predicted_x_0
+                + torch.sqrt(alphas_t) * (1.0 - alpha_bars_previous_t) / (1.0 - alpha_bars_t) * x_t
+            )
 
             posterior_variance = _extract(self.schedule.posterior_variance, timestep_batch, x_t.shape)
             noise = torch.randn(shape, device=sample_device, generator=generator)

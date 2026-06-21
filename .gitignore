@@ -3,6 +3,8 @@ __pycache__/
 *.pth
 *.pt
 generated_images/
+generated_images_10k/
+generated_images_10k_noema_test/
 checkpoints/
 runs/
 scores.json

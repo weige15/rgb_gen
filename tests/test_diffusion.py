@@ -97,6 +97,21 @@ class GaussianDiffusionTests(unittest.TestCase):
         self.assertEqual(tuple(samples.shape), (1, 3, 64, 64))
         self.assertTrue(torch.isfinite(samples).all().item())
 
+    def test_sampling_clips_predicted_clean_image(self) -> None:
+        model = _ExtremeNoiseModel().eval()
+        diffusion = GaussianDiffusion(DiffusionConfig(train_timesteps=4, sampling_steps=4))
+
+        samples = diffusion.sample(
+            model,
+            _conditions(1),
+            (1, 3, 64, 64),
+            generator=torch.Generator().manual_seed(7),
+        )
+
+        self.assertTrue(torch.isfinite(samples).all().item())
+        self.assertLessEqual(float(samples.max().item()), 1.0)
+        self.assertGreaterEqual(float(samples.min().item()), -1.0)
+
     def test_sampling_cfg_mixing_supports_ddp_like_wrapper(self) -> None:
         torch.manual_seed(14)
         model = _DDPLikeWrapper(_tiny_model().eval())
@@ -165,6 +180,15 @@ class _DDPLikeWrapper(torch.nn.Module):
 
     def forward(self, *args, **kwargs):
         return self.module(*args, **kwargs)
+
+
+class _ExtremeNoiseModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.dummy = torch.nn.Parameter(torch.zeros(()))
+
+    def forward(self, x_t, timesteps, animal_ids, object_ids, pair_ids):
+        return torch.full_like(x_t, 1e6)
 
 
 if __name__ == "__main__":
