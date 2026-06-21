@@ -34,6 +34,8 @@ class TrainOrchestratorTests(unittest.TestCase):
             self.assertFalse(checkpoint["uses_pretrained_generator_weights"])
             self.assertEqual(checkpoint["train_step"], 1)
             self.assertIn("model_state_dict", checkpoint)
+            self.assertIn("optimizer_state_dict", checkpoint)
+            self.assertIn("scaler_state_dict", checkpoint)
             self.assertIn("diffusion_config", checkpoint)
             self.assertEqual(checkpoint["seed"], 123)
 
@@ -48,6 +50,46 @@ class TrainOrchestratorTests(unittest.TestCase):
             save_event = next(event for event in events if event["event"] == "save")
             self.assertEqual(save_event["eta_seconds"], 0.0)
             self.assertFalse((root / "generated_images").exists())
+
+    def test_resume_from_old_checkpoint_continues_step_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            train_csv, image_dir = _training_fixture(root)
+            run_dir = root / "run"
+            first_model = root / "model_step1.pth"
+
+            exit_code = train.main(
+                _smoke_args(train_csv, image_dir, first_model, run_dir)
+                + ["--save_every_steps", "1", "--ema"]
+            )
+
+            self.assertEqual(exit_code, 0)
+            old_checkpoint_path = root / "old_step_000001.pth"
+            old_checkpoint = torch.load(run_dir / "checkpoints" / "step_000001.pth", map_location="cpu")
+            old_checkpoint.pop("optimizer_state_dict")
+            old_checkpoint.pop("scaler_state_dict")
+            torch.save(old_checkpoint, old_checkpoint_path)
+
+            second_model = root / "model_step2.pth"
+            exit_code = train.main(
+                _smoke_args(train_csv, image_dir, second_model, run_dir, max_steps=2)
+                + ["--resume_from", str(old_checkpoint_path), "--save_every_steps", "1", "--ema"]
+            )
+
+            self.assertEqual(exit_code, 0)
+            resumed = torch.load(second_model, map_location="cpu")
+            self.assertEqual(resumed["train_step"], 2)
+            self.assertIn("optimizer_state_dict", resumed)
+            self.assertIn("scaler_state_dict", resumed)
+            self.assertTrue((run_dir / "checkpoints" / "step_000002.pth").exists())
+
+            events = [
+                json.loads(line)
+                for line in (run_dir / "train.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            resume_event = next(event for event in events if event["event"] == "resume")
+            self.assertEqual(resume_event["step"], 1)
+            self.assertEqual(resume_event["resume_from"], str(old_checkpoint_path))
 
     def test_progress_timing_estimates_remaining_steps(self) -> None:
         event = {"elapsed_seconds": None, "eta_seconds": None}
@@ -91,7 +133,13 @@ class TrainOrchestratorTests(unittest.TestCase):
         self.assertNotIn("cuda:0", source)
 
 
-def _smoke_args(train_csv: Path, image_dir: Path, output_model: Path, run_dir: Path) -> list[str]:
+def _smoke_args(
+    train_csv: Path,
+    image_dir: Path,
+    output_model: Path,
+    run_dir: Path,
+    max_steps: int = 1,
+) -> list[str]:
     return [
         "--train_csv",
         str(train_csv),
@@ -106,7 +154,7 @@ def _smoke_args(train_csv: Path, image_dir: Path, output_model: Path, run_dir: P
         "--epochs",
         "1",
         "--max_steps",
-        "1",
+        str(max_steps),
         "--batch_size",
         "2",
         "--cpu_smoke",

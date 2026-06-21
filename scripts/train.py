@@ -32,6 +32,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--extra_manifest")
     parser.add_argument("--output_model", default="model.pth")
     parser.add_argument("--run_dir", default="runs/train")
+    parser.add_argument("--resume_from")
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--devices")
     parser.add_argument("--epochs", type=int, default=1)
@@ -76,13 +77,15 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
     device_ids = parse_device_ids(args.devices)
     distributed = _distributed_state()
     device = resolve_device(device_ids, args.cpu_smoke, distributed["local_rank"], distributed["world_size"])
-    _prepare_outputs(Path(args.output_model), Path(args.run_dir), args.overwrite)
+    resume_path = Path(args.resume_from) if args.resume_from else None
+    _prepare_outputs(Path(args.output_model), Path(args.run_dir), args.overwrite, resume_path)
     _set_seed(args.seed)
 
     if distributed["world_size"] > 1:
         torch.distributed.init_process_group(backend="nccl" if device.type == "cuda" else "gloo")
 
     rank = distributed["rank"]
+    resume_checkpoint = _load_training_checkpoint(resume_path, device) if resume_path is not None else None
     records = load_train_records(args.train_csv, args.image_dir)
     records.extend(load_extra_records(args.extra_manifest))
     dataset = BrainrotDataset(records, augment=True)
@@ -94,39 +97,42 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         sampler=sampler,
         num_workers=args.num_workers,
     )
-    expected_steps = min(args.max_steps, args.epochs * (len(dataloader) // args.grad_accum_steps))
-
-    model_config = UNetConfig(
-        base_channels=args.base_channels,
-        channel_multipliers=_parse_int_tuple(args.channel_multipliers, "channel_multipliers"),
-        residual_blocks=args.residual_blocks,
-        embedding_dim=args.embedding_dim,
-        dropout=args.dropout,
-    )
-    diffusion_config = DiffusionConfig(
-        train_timesteps=args.train_timesteps,
-        schedule=args.schedule,
-        sampling_steps=args.sampling_steps,
-        cfg_dropout=args.cfg_dropout,
-    )
+    model_config, diffusion_config = _training_configs(args, resume_checkpoint)
     model = ConditionalUNet(model_config).to(device)
+    diffusion = GaussianDiffusion(diffusion_config)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    scaler = torch.amp.GradScaler("cuda", enabled=args.amp and device.type == "cuda")
+    ema_state = _clone_state_dict(model) if args.ema else None
+    global_step, ema_state = _restore_training_state(resume_checkpoint, model, ema_state, optimizer, scaler)
+    if global_step >= args.max_steps:
+        raise ValueError("resume checkpoint train_step is already >= max_steps.")
+    expected_steps = min(
+        args.max_steps,
+        global_step + args.epochs * (len(dataloader) // args.grad_accum_steps),
+    )
     train_model = (
         DistributedDataParallel(model, device_ids=[device.index] if device.type == "cuda" and device.index is not None else None)
         if distributed["world_size"] > 1
         else model
     )
-    diffusion = GaussianDiffusion(diffusion_config)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-    scaler = torch.amp.GradScaler("cuda", enabled=args.amp and device.type == "cuda")
-    ema_state = _clone_state_dict(model) if args.ema else None
 
     run_dir = Path(args.run_dir)
     if rank == 0:
         run_dir.mkdir(parents=True, exist_ok=True)
-        _append_log(run_dir / "train.jsonl", _log_event(args, distributed, 0, None, Path(args.output_model), "start"))
+        event = _log_event(
+            args,
+            distributed,
+            global_step,
+            None,
+            Path(args.output_model),
+            "resume" if resume_path is not None else "start",
+        )
+        if resume_path is not None:
+            event["resume_from"] = str(resume_path)
+        _append_log(run_dir / "train.jsonl", event)
 
-    global_step = 0
     last_loss: float | None = None
+    start_step = global_step
     started = time.monotonic()
     model.train()
     optimizer.zero_grad(set_to_none=True)
@@ -157,18 +163,30 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             if rank == 0:
                 event = _log_event(args, distributed, global_step, last_loss, Path(args.output_model), "step")
                 event["epoch"] = epoch
-                _add_progress_timing(event, started, global_step, expected_steps)
+                _add_progress_timing(event, started, global_step - start_step, expected_steps - start_step)
                 _append_log(run_dir / "train.jsonl", event)
                 if args.save_every_steps and global_step % args.save_every_steps == 0:
                     checkpoint_path = run_dir / "checkpoints" / f"step_{global_step:06d}.pth"
-                    _save_checkpoint(checkpoint_path, model, ema_state, model_config, diffusion_config, args, global_step)
+                    if checkpoint_path.exists() and not args.overwrite:
+                        raise FileExistsError(f"Checkpoint {checkpoint_path} exists; pass --overwrite to replace it.")
+                    _save_checkpoint(
+                        checkpoint_path,
+                        model,
+                        ema_state,
+                        optimizer,
+                        scaler,
+                        model_config,
+                        diffusion_config,
+                        args,
+                        global_step,
+                    )
 
             if global_step >= args.max_steps:
                 break
         if global_step >= args.max_steps:
             break
 
-    if global_step == 0:
+    if global_step == start_step:
         raise RuntimeError("Training finished without completing an optimizer step.")
 
     if rank == 0:
@@ -176,13 +194,15 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             Path(args.output_model),
             model,
             ema_state,
+            optimizer,
+            scaler,
             model_config,
             diffusion_config,
             args,
             global_step,
         )
         event = _log_event(args, distributed, global_step, last_loss, Path(args.output_model), "save")
-        _add_progress_timing(event, started, global_step, global_step)
+        _add_progress_timing(event, started, global_step - start_step, global_step - start_step)
         _append_log(run_dir / "train.jsonl", event)
     else:
         checkpoint = {}
@@ -240,10 +260,10 @@ def _validate_training_args(args: argparse.Namespace) -> None:
         raise ValueError("sample_every_steps is reserved for a later sample-grid task.")
 
 
-def _prepare_outputs(output_model: Path, run_dir: Path, overwrite: bool) -> None:
+def _prepare_outputs(output_model: Path, run_dir: Path, overwrite: bool, resume_from: Path | None = None) -> None:
     if output_model.exists() and not overwrite:
         raise FileExistsError(f"Output model {output_model} exists; pass --overwrite to replace it.")
-    if run_dir.exists() and any(run_dir.iterdir()) and not overwrite:
+    if run_dir.exists() and any(run_dir.iterdir()) and not overwrite and resume_from is None:
         raise FileExistsError(f"Run directory {run_dir} is not empty; pass --overwrite to reuse it.")
     output_model.parent.mkdir(parents=True, exist_ok=True)
 
@@ -293,10 +313,90 @@ def _update_ema(ema_state: dict[str, torch.Tensor], model: torch.nn.Module, deca
             ema_state[key].copy_(value)
 
 
+def _training_configs(
+    args: argparse.Namespace,
+    checkpoint: dict[str, Any] | None,
+) -> tuple[UNetConfig, DiffusionConfig]:
+    if checkpoint is not None:
+        return (
+            UNetConfig(**dict(checkpoint["model_config"])),
+            DiffusionConfig(**dict(checkpoint["diffusion_config"])),
+        )
+    return (
+        UNetConfig(
+            base_channels=args.base_channels,
+            channel_multipliers=_parse_int_tuple(args.channel_multipliers, "channel_multipliers"),
+            residual_blocks=args.residual_blocks,
+            embedding_dim=args.embedding_dim,
+            dropout=args.dropout,
+        ),
+        DiffusionConfig(
+            train_timesteps=args.train_timesteps,
+            schedule=args.schedule,
+            sampling_steps=args.sampling_steps,
+            cfg_dropout=args.cfg_dropout,
+        ),
+    )
+
+
+def _load_training_checkpoint(path: Path, device: torch.device) -> dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"Resume checkpoint {path} does not exist.")
+    checkpoint = torch.load(path, map_location=device)
+    if not isinstance(checkpoint, dict):
+        raise ValueError("Resume checkpoint must be a dictionary.")
+    required = {
+        "format_version",
+        "model_state_dict",
+        "model_config",
+        "diffusion_config",
+        "animals",
+        "objects",
+        "train_step",
+        "uses_pretrained_generator_weights",
+    }
+    missing = sorted(required - set(checkpoint))
+    if missing:
+        raise ValueError(f"Resume checkpoint is missing required keys: {missing}.")
+    if checkpoint["format_version"] != 1:
+        raise ValueError(f"Unsupported checkpoint format version {checkpoint['format_version']!r}.")
+    if list(checkpoint["animals"]) != list(ANIMALS) or list(checkpoint["objects"]) != list(OBJECTS):
+        raise ValueError("Resume checkpoint category mapping does not match this project.")
+    if checkpoint["uses_pretrained_generator_weights"]:
+        raise ValueError("Refusing to resume from a pretrained-generator checkpoint.")
+    return checkpoint
+
+
+def _restore_training_state(
+    checkpoint: dict[str, Any] | None,
+    model: torch.nn.Module,
+    ema_state: dict[str, torch.Tensor] | None,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler,
+) -> tuple[int, dict[str, torch.Tensor] | None]:
+    if checkpoint is None:
+        return 0, ema_state
+    model.load_state_dict(checkpoint["model_state_dict"])
+    if ema_state is not None:
+        saved_ema = checkpoint.get("ema_state_dict")
+        ema_state = (
+            {key: value.detach().clone() for key, value in saved_ema.items()}
+            if saved_ema is not None
+            else _clone_state_dict(model)
+        )
+    if checkpoint.get("optimizer_state_dict") is not None:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if scaler.is_enabled() and checkpoint.get("scaler_state_dict"):
+        scaler.load_state_dict(checkpoint["scaler_state_dict"])
+    return int(checkpoint["train_step"]), ema_state
+
+
 def _save_checkpoint(
     path: Path,
     model: torch.nn.Module,
     ema_state: dict[str, torch.Tensor] | None,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler,
     model_config: UNetConfig,
     diffusion_config: DiffusionConfig,
     args: argparse.Namespace,
@@ -307,6 +407,8 @@ def _save_checkpoint(
         "format_version": 1,
         "model_state_dict": model.state_dict(),
         "ema_state_dict": ema_state,
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scaler_state_dict": scaler.state_dict(),
         "model_config": asdict(model_config),
         "diffusion_config": asdict(diffusion_config),
         "animals": ANIMALS,
