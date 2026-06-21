@@ -94,6 +94,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         sampler=sampler,
         num_workers=args.num_workers,
     )
+    expected_steps = min(args.max_steps, args.epochs * (len(dataloader) // args.grad_accum_steps))
 
     model_config = UNetConfig(
         base_channels=args.base_channels,
@@ -156,7 +157,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             if rank == 0:
                 event = _log_event(args, distributed, global_step, last_loss, Path(args.output_model), "step")
                 event["epoch"] = epoch
-                event["elapsed_seconds"] = round(time.monotonic() - started, 4)
+                _add_progress_timing(event, started, global_step, expected_steps)
                 _append_log(run_dir / "train.jsonl", event)
                 if args.save_every_steps and global_step % args.save_every_steps == 0:
                     checkpoint_path = run_dir / "checkpoints" / f"step_{global_step:06d}.pth"
@@ -180,7 +181,9 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             args,
             global_step,
         )
-        _append_log(run_dir / "train.jsonl", _log_event(args, distributed, global_step, last_loss, Path(args.output_model), "save"))
+        event = _log_event(args, distributed, global_step, last_loss, Path(args.output_model), "save")
+        _add_progress_timing(event, started, global_step, global_step)
+        _append_log(run_dir / "train.jsonl", event)
     else:
         checkpoint = {}
 
@@ -346,6 +349,13 @@ def _log_event(
         "eta_seconds": None,
         "output_model": str(output_model),
     }
+
+
+def _add_progress_timing(event: dict[str, Any], started: float, step: int, expected_steps: int) -> None:
+    elapsed = time.monotonic() - started
+    event["elapsed_seconds"] = round(elapsed, 4)
+    if step > 0 and expected_steps >= step:
+        event["eta_seconds"] = round((elapsed / step) * (expected_steps - step), 4)
 
 
 def _append_log(path: Path, event: dict[str, Any]) -> None:

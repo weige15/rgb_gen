@@ -44,7 +44,19 @@ class TrainOrchestratorTests(unittest.TestCase):
             step_event = next(event for event in events if event["event"] == "step")
             required_fields = {"timestamp", "seed", "device", "elapsed_seconds", "eta_seconds", "step", "output_model"}
             self.assertTrue(required_fields.issubset(step_event))
+            self.assertEqual(step_event["eta_seconds"], 0.0)
+            save_event = next(event for event in events if event["event"] == "save")
+            self.assertEqual(save_event["eta_seconds"], 0.0)
             self.assertFalse((root / "generated_images").exists())
+
+    def test_progress_timing_estimates_remaining_steps(self) -> None:
+        event = {"elapsed_seconds": None, "eta_seconds": None}
+
+        with mock.patch("scripts.train.time.monotonic", return_value=14.0):
+            train._add_progress_timing(event, started=10.0, step=2, expected_steps=5)
+
+        self.assertEqual(event["elapsed_seconds"], 4.0)
+        self.assertEqual(event["eta_seconds"], 6.0)
 
     def test_existing_output_model_is_rejected_without_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
