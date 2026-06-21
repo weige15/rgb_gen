@@ -18,6 +18,8 @@ class UNetConfig:
     residual_blocks: int = 1
     embedding_dim: int = 128
     dropout: float = 0.0
+    attention_resolutions: tuple[int, ...] = ()
+    attention_heads: int = 4
     num_animals: int = len(ANIMALS)
     num_objects: int = len(OBJECTS)
     num_pairs: int = len(ANIMALS) * len(OBJECTS)
@@ -52,15 +54,18 @@ class ConditionalUNet(nn.Module):
         )
 
         channels = [config.base_channels * multiplier for multiplier in config.channel_multipliers]
+        resolutions = [config.image_size // (2**level) for level in range(len(channels))]
         self.input_conv = nn.Conv2d(config.image_channels, channels[0], kernel_size=3, padding=1)
 
         self.down_blocks = nn.ModuleList()
         current_channels = channels[0]
-        for level, out_channels in enumerate(channels):
+        for level, (out_channels, resolution) in enumerate(zip(channels, resolutions, strict=True)):
             blocks = []
             for block_index in range(config.residual_blocks):
                 block_in = current_channels if block_index == 0 else out_channels
                 blocks.append(ResidualBlock(block_in, out_channels, config.embedding_dim, config.dropout))
+                if resolution in config.attention_resolutions:
+                    blocks.append(AttentionBlock(out_channels, config.attention_heads))
             downsample = (
                 nn.Conv2d(out_channels, out_channels, kernel_size=4, stride=2, padding=1)
                 if level < len(channels) - 1
@@ -69,21 +74,26 @@ class ConditionalUNet(nn.Module):
             self.down_blocks.append(nn.ModuleDict({"blocks": nn.ModuleList(blocks), "downsample": downsample}))
             current_channels = out_channels
 
-        self.middle = nn.ModuleList(
-            [
-                ResidualBlock(current_channels, current_channels, config.embedding_dim, config.dropout),
-                ResidualBlock(current_channels, current_channels, config.embedding_dim, config.dropout),
-            ]
-        )
+        middle_blocks: list[nn.Module] = [
+            ResidualBlock(current_channels, current_channels, config.embedding_dim, config.dropout)
+        ]
+        if resolutions[-1] in config.attention_resolutions:
+            middle_blocks.append(AttentionBlock(current_channels, config.attention_heads))
+        middle_blocks.append(ResidualBlock(current_channels, current_channels, config.embedding_dim, config.dropout))
+        self.middle = nn.ModuleList(middle_blocks)
 
         self.up_blocks = nn.ModuleList()
-        for skip_channels in reversed(channels[:-1]):
+        for skip_channels, resolution in zip(reversed(channels[:-1]), reversed(resolutions[:-1]), strict=True):
             upsample = nn.ConvTranspose2d(current_channels, skip_channels, kernel_size=4, stride=2, padding=1)
             blocks = [
                 ResidualBlock(skip_channels * 2, skip_channels, config.embedding_dim, config.dropout)
             ]
+            if resolution in config.attention_resolutions:
+                blocks.append(AttentionBlock(skip_channels, config.attention_heads))
             for _ in range(config.residual_blocks - 1):
                 blocks.append(ResidualBlock(skip_channels, skip_channels, config.embedding_dim, config.dropout))
+                if resolution in config.attention_resolutions:
+                    blocks.append(AttentionBlock(skip_channels, config.attention_heads))
             self.up_blocks.append(nn.ModuleDict({"upsample": upsample, "blocks": nn.ModuleList(blocks)}))
             current_channels = skip_channels
 
@@ -190,6 +200,30 @@ class ResidualBlock(nn.Module):
         return hidden + self.skip(x)
 
 
+class AttentionBlock(nn.Module):
+    def __init__(self, channels: int, heads: int):
+        super().__init__()
+        self.heads = _attention_heads(channels, heads)
+        self.norm = nn.GroupNorm(_group_count(channels), channels)
+        self.qkv = nn.Conv1d(channels, channels * 3, kernel_size=1)
+        self.proj = nn.Conv1d(channels, channels, kernel_size=1)
+
+    def forward(self, x: torch.Tensor, embedding: torch.Tensor | None = None) -> torch.Tensor:
+        batch, channels, height, width = x.shape
+        hidden = self.norm(x).reshape(batch, channels, height * width)
+        query, key, value = self.qkv(hidden).chunk(3, dim=1)
+        head_dim = channels // self.heads
+        query = query.reshape(batch, self.heads, head_dim, height * width)
+        key = key.reshape(batch, self.heads, head_dim, height * width)
+        value = value.reshape(batch, self.heads, head_dim, height * width)
+        attention = torch.softmax(
+            torch.einsum("bhcn,bhcm->bhnm", query * (head_dim**-0.5), key),
+            dim=-1,
+        )
+        hidden = torch.einsum("bhnm,bhcm->bhcn", attention, value).reshape(batch, channels, height * width)
+        return x + self.proj(hidden).reshape(batch, channels, height, width)
+
+
 def sinusoidal_timestep_embedding(timesteps: torch.Tensor, embedding_dim: int) -> torch.Tensor:
     return _sinusoidal_timestep_embedding(
         timesteps,
@@ -236,6 +270,16 @@ def _validate_config(config: UNetConfig) -> None:
         raise ValueError("embedding_dim must be positive.")
     if not 0.0 <= config.dropout < 1.0:
         raise ValueError("dropout must be in [0, 1).")
+    if any(resolution <= 0 for resolution in config.attention_resolutions):
+        raise ValueError("attention_resolutions must contain positive integers.")
+    valid_resolutions = {config.image_size // (2**level) for level in range(len(config.channel_multipliers))}
+    invalid_resolutions = sorted(set(config.attention_resolutions) - valid_resolutions)
+    if invalid_resolutions:
+        raise ValueError(
+            f"attention_resolutions must be among {sorted(valid_resolutions)}, got {invalid_resolutions}."
+        )
+    if config.attention_heads <= 0:
+        raise ValueError("attention_heads must be positive.")
     if config.num_animals <= 0 or config.num_objects <= 0 or config.num_pairs <= 0:
         raise ValueError("label counts must be positive.")
 
@@ -284,4 +328,11 @@ def _group_count(channels: int) -> int:
     for groups in (8, 4, 2, 1):
         if channels % groups == 0:
             return groups
+    return 1
+
+
+def _attention_heads(channels: int, requested_heads: int) -> int:
+    for heads in range(requested_heads, 0, -1):
+        if channels % heads == 0:
+            return heads
     return 1

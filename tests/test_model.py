@@ -60,6 +60,25 @@ class ConditionalUNetTests(unittest.TestCase):
         self.assertTrue(gradients)
         self.assertTrue(any(torch.isfinite(gradient).all().item() for gradient in gradients))
 
+    def test_attention_preserves_image_shape(self) -> None:
+        torch.manual_seed(5)
+        model = ConditionalUNet(
+            UNetConfig(
+                base_channels=8,
+                channel_multipliers=(1, 2),
+                embedding_dim=32,
+                residual_blocks=1,
+                attention_resolutions=(32,),
+                attention_heads=2,
+            )
+        )
+        x_t, timesteps, animal_ids, object_ids, pair_ids = _batch()
+
+        output = model(x_t, timesteps, animal_ids, object_ids, pair_ids)
+
+        self.assertEqual(tuple(output.shape), tuple(x_t.shape))
+        self.assertTrue(any("qkv" in name for name, _ in model.named_parameters()))
+
     def test_invalid_image_shape_is_rejected(self) -> None:
         model = _tiny_model()
         x_t, timesteps, animal_ids, object_ids, pair_ids = _batch()
@@ -107,6 +126,10 @@ class ConditionalUNetTests(unittest.TestCase):
 
         self.assertEqual(tuple(embedding.shape), (3, 7))
         self.assertTrue(torch.isfinite(embedding).all().item())
+
+    def test_invalid_attention_resolution_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ConditionalUNet(UNetConfig(attention_resolutions=(7,)))
 
 
 def _tiny_model() -> ConditionalUNet:

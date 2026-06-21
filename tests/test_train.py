@@ -132,6 +132,14 @@ class TrainOrchestratorTests(unittest.TestCase):
 
         self.assertNotIn("cuda:0", source)
 
+    def test_attention_args_are_saved_in_model_config(self) -> None:
+        args = train.parse_args(["--attention_resolutions", "16,8", "--attention_heads", "2"])
+
+        model_config, _ = train._training_configs(args, None)
+
+        self.assertEqual(model_config.attention_resolutions, (16, 8))
+        self.assertEqual(model_config.attention_heads, 2)
+
 
 def _smoke_args(
     train_csv: Path,

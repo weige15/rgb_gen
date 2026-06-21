@@ -56,6 +56,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--residual_blocks", type=int, default=1)
     parser.add_argument("--embedding_dim", type=int, default=128)
     parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument("--attention_resolutions", default="")
+    parser.add_argument("--attention_heads", type=int, default=4)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--cpu_smoke", action="store_true")
     return parser.parse_args(argv)
@@ -293,6 +295,12 @@ def _parse_int_tuple(value: str, name: str) -> tuple[int, ...]:
     return parsed
 
 
+def _parse_optional_int_tuple(value: str, name: str) -> tuple[int, ...]:
+    if not value.strip():
+        return ()
+    return _parse_int_tuple(value, name)
+
+
 def _ensure_finite_gradient(model: torch.nn.Module) -> None:
     gradients = [parameter.grad for parameter in model.parameters() if parameter.grad is not None]
     if not gradients:
@@ -329,6 +337,8 @@ def _training_configs(
             residual_blocks=args.residual_blocks,
             embedding_dim=args.embedding_dim,
             dropout=args.dropout,
+            attention_resolutions=_parse_optional_int_tuple(args.attention_resolutions, "attention_resolutions"),
+            attention_heads=args.attention_heads,
         ),
         DiffusionConfig(
             train_timesteps=args.train_timesteps,
