@@ -1,0 +1,97 @@
+Instructions for Running the Scoring Program
+The official scoring program is provided for local evaluation. This is an optional step designed to assist your development process.
+
+Download Files
+
+Download the following files from the Files tab on the left:
+
+scoring_program.zip from the Image Evaluation Program button
+hw6_reference.zip from the HW6 Reference button
+Unzip Files
+
+First, unzip scoring_program.zip into the scoring_program directory:
+
+unzip scoring_program.zip -d scoring_program
+Then, unzip hw6_reference.zip into scoring_program/input/ref:
+
+mkdir scoring_program/input
+unzip hw6_reference.zip -d scoring_program/input/ref
+Create a Directory for Your Generations
+
+mkdir scoring_program/input/res
+Folder Structure
+
+The expected folder structure is:
+
+.
+├── metadata
+├── score.py
+└── input
+    ├── ref
+    │   ├── test
+    │   │   ├── 000001.png
+    │   │   ├── 000002.png
+    │   │   ├── ...
+    │   ├── test.json
+    │   ├── test_mu.npy
+    │   └── test_sigma.npy
+    └── res
+        ├── 000001.png
+        ├── 000002.png
+        ├── ...
+Notes:
+
+ref and res are fixed folder names.
+./input/ref/test contains the ground-truth images.
+All your generated images should be saved in ./input/res, using the same filenames as those in ./input/ref/test.
+./input/ref/test.json contains the text prompts used for evaluation. You are encouraged to create a more diverse test set by sampling from training data.
+Example test.json:
+
+{
+    "000001": {
+        "image_name": "000001.png",
+        "text_prompt": "a fish and a chair"
+    },
+    "000002": {
+        "image_name": "000002.png",
+        "text_prompt": "a fish and a chair"
+    }
+}
+Each "image_name" entry should match an image in ./input/ref/test, representing the ground truth corresponding to the provided "text_prompt".
+
+Run the Scoring Script
+
+Execute the following command to compute the scores:
+
+cd scoring_program
+python score.py --input_dir ./input --output_dir ./ --image_size 64 --num_images 3000 --test_json test.json --score fid clip_t clip_i --verbose
+For the details of arguments, see
+
+python score.py --help
+Example Output
+
+[INFO] Reference directory: ./input/ref.
+[INFO] Results directory: ./input/res.
+[INFO] No configuration file provided, using command line arguments.
+[INFO] Starting CLIP score calculation.
+[INFO] Loading test JSON file: ./input/ref/test.json.
+[INFO] Found 2 images in the zip file.
+[INFO] Checking if all image paths from the test JSON file are present in the zip file.
+[INFO] Loading CLIP model: ViT-B-32-quickgelu with pretrained weights: openai.
+[INFO] Calculating CLIP scores for 2 images...
+[INFO] CLIP Image-Text Score: 0.323976
+[INFO] CLIP Image-Image Score: 1.000000
+[INFO] Starting FID score calculation.
+[INFO] Found 2 images in the zip file.
+[INFO] Generating Inception model features...
+[INFO] Calculating FID score...
+[INFO] FID score: 431.5739.
+[INFO] Saving scores to: ./scores.json
+[INFO] The content of the output file: {"CLIP_T": 0.27935874462127686, "CLIP_I": 1.0, "FID": 332.76129394269384}
+The final scores will be saved in ./scores.json:
+
+ {
+     "CLIP_T": 0.27935874462127686,
+     "CLIP_I": 1.0,
+     "FID": 332.76129394269384
+ }
