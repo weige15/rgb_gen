@@ -621,7 +621,6 @@ Planned flags:
 - `--run_dir`
 - `--seed`
 - `--devices`
-- `--epochs`
 - `--max_steps`
 - `--batch_size`
 - `--learning_rate`
@@ -653,7 +652,7 @@ Training loop:
 3. Build dataset and sampler.
 4. Build model and diffusion from config.
 5. Wrap model in DDP when distributed.
-6. Run optimization loop with progress reporting.
+6. Run optimization loop until `--max_steps` optimizer updates have completed, with progress reporting.
 7. Update EMA after optimizer steps when enabled.
 8. Save checkpoints periodically if configured.
 9. Save final `model.pth` atomically.

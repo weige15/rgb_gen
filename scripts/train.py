@@ -35,7 +35,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--resume_from")
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--devices")
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--max_steps", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=0)
@@ -109,10 +109,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
     global_step, ema_state = _restore_training_state(resume_checkpoint, model, ema_state, optimizer, scaler)
     if global_step >= args.max_steps:
         raise ValueError("resume checkpoint train_step is already >= max_steps.")
-    expected_steps = min(
-        args.max_steps,
-        global_step + args.epochs * (len(dataloader) // args.grad_accum_steps),
-    )
+    expected_steps = args.max_steps
     train_model = (
         DistributedDataParallel(model, device_ids=[device.index] if device.type == "cuda" and device.index is not None else None)
         if distributed["world_size"] > 1
@@ -139,18 +136,24 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
     started = time.monotonic()
     model.train()
     optimizer.zero_grad(set_to_none=True)
-    for epoch in range(args.epochs):
+    data_pass = 0
+    accumulation_count = 0
+    accumulated_loss = 0.0
+    while global_step < args.max_steps:
         if sampler is not None:
-            sampler.set_epoch(epoch)
-        for batch_index, (images, conditions) in enumerate(dataloader):
+            sampler.set_epoch(data_pass)
+        for images, conditions in dataloader:
             images = images.to(device)
             conditions = {key: value.to(device) for key, value in conditions.items()}
             autocast = torch.amp.autocast(device_type="cuda", enabled=args.amp and device.type == "cuda")
             with autocast if args.amp and device.type == "cuda" else nullcontext():
-                loss = diffusion.training_loss(train_model, images, conditions) / args.grad_accum_steps
+                unscaled_loss = diffusion.training_loss(train_model, images, conditions)
+                loss = unscaled_loss / args.grad_accum_steps
             scaler.scale(loss).backward()
+            accumulation_count += 1
+            accumulated_loss += float(unscaled_loss.detach().cpu().item())
 
-            if (batch_index + 1) % args.grad_accum_steps != 0:
+            if accumulation_count < args.grad_accum_steps:
                 continue
 
             scaler.unscale_(optimizer)
@@ -159,13 +162,15 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
             global_step += 1
-            last_loss = float(loss.detach().cpu().item() * args.grad_accum_steps)
+            last_loss = accumulated_loss / accumulation_count
+            accumulation_count = 0
+            accumulated_loss = 0.0
             if ema_state is not None:
                 _update_ema(ema_state, model, args.ema_decay)
 
             if rank == 0:
                 event = _log_event(args, distributed, global_step, last_loss, Path(args.output_model), "step")
-                event["epoch"] = epoch
+                event["data_pass"] = data_pass
                 _add_progress_timing(event, started, global_step - start_step, expected_steps - start_step)
                 _append_log(run_dir / "train.jsonl", event)
                 if args.save_every_steps and global_step % args.save_every_steps == 0:
@@ -186,8 +191,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
 
             if global_step >= args.max_steps:
                 break
-        if global_step >= args.max_steps:
-            break
+        data_pass += 1
 
     if global_step == start_step:
         raise RuntimeError("Training finished without completing an optimizer step.")
@@ -249,8 +253,8 @@ def resolve_device(device_ids: list[int], cpu_smoke: bool, local_rank: int, worl
 
 
 def _validate_training_args(args: argparse.Namespace) -> None:
-    if args.epochs <= 0:
-        raise ValueError("epochs must be positive.")
+    if getattr(args, "epochs", None) is not None:
+        raise ValueError("--epochs was removed; use --max_steps as the single training length control.")
     if args.max_steps <= 0:
         raise ValueError("max_steps must be positive.")
     if args.batch_size <= 0:
@@ -437,7 +441,11 @@ def _save_checkpoint(
 
 
 def _jsonable_args(args: argparse.Namespace) -> dict[str, Any]:
-    return {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
+    return {
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in vars(args).items()
+        if key != "epochs"
+    }
 
 
 def _log_event(

@@ -38,6 +38,7 @@ class TrainOrchestratorTests(unittest.TestCase):
             self.assertIn("scaler_state_dict", checkpoint)
             self.assertIn("diffusion_config", checkpoint)
             self.assertEqual(checkpoint["seed"], 123)
+            self.assertNotIn("epochs", checkpoint["training_config"])
 
             log_lines = (run_dir / "train.jsonl").read_text(encoding="utf-8").splitlines()
             self.assertGreaterEqual(len(log_lines), 2)
@@ -114,6 +115,12 @@ class TrainOrchestratorTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
 
+    def test_epochs_argument_is_rejected(self) -> None:
+        with redirect_stdout(StringIO()):
+            exit_code = train.main(["--epochs", "1", "--cpu_smoke"])
+
+        self.assertEqual(exit_code, 1)
+
     def test_parse_device_ids_rejects_more_than_four_gpus(self) -> None:
         with self.assertRaises(ValueError):
             train.parse_device_ids("0,1,2,3,4")
@@ -166,8 +173,6 @@ def _smoke_args(
         str(run_dir),
         "--seed",
         "123",
-        "--epochs",
-        "1",
         "--max_steps",
         str(max_steps),
         "--batch_size",

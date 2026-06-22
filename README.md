@@ -27,7 +27,7 @@ Lint, format, and type-check configs are not currently configured.
 
 ## Train
 
-Default training input paths are `dataset/train.csv` and `dataset/trainset/`. The default output is `model.pth`; existing output files are refused unless `--overwrite` is passed.
+Default training input paths are `dataset/train.csv` and `dataset/trainset/`. The default output is `model.pth`; existing output files are refused unless `--overwrite` is passed. Training length is controlled only by `--max_steps`; `--epochs` is not supported.
 
 ```bash
 python scripts/train.py \
@@ -35,7 +35,8 @@ python scripts/train.py \
   --image_dir dataset/trainset \
   --output_model model.pth \
   --run_dir runs/train \
-  --seed 1234
+  --seed 1234 \
+  --max_steps 100000
 ```
 
 CPU smoke runs are supported for code-path checks only:
@@ -63,7 +64,8 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 scripts/train.py \
   --train_csv dataset/train.csv \
   --image_dir dataset/trainset \
   --output_model model.pth \
-  --run_dir runs/train
+  --run_dir runs/train \
+  --max_steps 100000
 ```
 
 Extra external data is disabled by default. If used, pass `--extra_manifest`; the manifest must include provenance, labels, hashes, and must not contain pretrained-model-generated images or labels.
