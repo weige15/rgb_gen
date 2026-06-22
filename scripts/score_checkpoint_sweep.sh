@@ -4,9 +4,9 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-PATTERN="${PATTERN:-generated_images_xl_*_ddim250_gs*_test}"
-SCORES_TSV="${SCORES_TSV:-runs/checkpoint_sweep_scores_$(date -u +%Y%m%dT%H%M%SZ).tsv}"
-BATCH_SIZE="${BATCH_SIZE:-32}"
+PATTERN="${PATTERN:-generated_images_xl_full_*_ddpm1000_gs*_test}"
+SCORES_TSV="${SCORES_TSV:-runs/checkpoint_sweep_full_scores_$(date -u +%Y%m%dT%H%M%SZ).tsv}"
+BATCH_SIZE="${BATCH_SIZE:-128}"
 IMAGE_SIZE="${IMAGE_SIZE:-64}"
 SCORES="${SCORES:-fid}"
 OVERWRITE="${OVERWRITE:-0}"
