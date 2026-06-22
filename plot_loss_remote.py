@@ -6,7 +6,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # 設定檔案路徑
-LOG_FILE_PATH = 'runs/train_xl_attention_film_100k/train.jsonl'
+LOG_FILE_PATH = 'runs/train_xl_attention_film_100k_b32/train.jsonl'
 OUTPUT_IMAGE_PATH = 'training_loss_realtime.png'  # 輸出的圖片名稱
 
 steps = []
